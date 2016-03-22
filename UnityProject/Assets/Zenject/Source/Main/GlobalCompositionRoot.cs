@@ -10,14 +10,15 @@ using UnityEngine;
 
 namespace Zenject
 {
-    public sealed class GlobalCompositionRoot : CompositionRoot
+    public class GlobalCompositionRoot : CompositionRoot
     {
+        public const string GlobalInstallersResourceName = "ZenjectGlobalInstallers";
+
         static GlobalCompositionRoot _instance;
+
         DiContainer _container;
         IFacade _rootFacade;
         bool _hasInitialized;
-
-        public const string GlobalInstallersResourceName = "ZenjectGlobalInstallers";
 
         public override DiContainer Container
         {
@@ -35,6 +36,14 @@ namespace Zenject
             }
         }
 
+        public override bool AllowInjectInactive
+        {
+            get
+            {
+                return false;
+            }
+        }
+
         public static GlobalCompositionRoot Instance
         {
             get
@@ -43,20 +52,32 @@ namespace Zenject
                 {
                     _instance = new GameObject("Global Composition Root")
                         .AddComponent<GlobalCompositionRoot>();
+                    _instance.Initialize();
                 }
+
                 return _instance;
             }
         }
 
-        protected override void Initialize()
+        public void EnsureIsInitialized()
         {
-            DontDestroyOnLoad(gameObject);
+            // Do nothing - Initialize occurs in Instance property
+        }
 
-            // Is this a good idea?
-            //go.hideFlags = HideFlags.HideInHierarchy;
+        void Initialize()
+        {
+            Log.Debug("Initializing GlobalCompositionRoot");
+
+            Assert.IsNull(Container);
+            Assert.IsNull(RootFacade);
+
+            DontDestroyOnLoad(gameObject);
 
             _container = CreateContainer(false, this);
             _rootFacade = _container.Resolve<IFacade>();
+
+            Assert.IsNotNull(Container);
+            Assert.IsNotNull(RootFacade);
         }
 
         public void InitializeRootIfNecessary()
@@ -72,15 +93,20 @@ namespace Zenject
         {
             Assert.That(isValidating || root != null);
 
-            var container = new DiContainer(root == null ? null : root.transform);
+            var container = new DiContainer();
 
             container.IsValidating = isValidating;
 
-            container.Bind<GlobalCompositionRoot>().ToInstance(root);
+            if (root != null)
+            {
+                container.Bind<Transform>(ZenConstants.DefaultParentId)
+                    .ToInstance<Transform>(root.gameObject.transform);
+            }
+
             container.Bind<CompositionRoot>().ToInstance(root);
+            container.Bind<GlobalCompositionRoot>().ToInstance(root);
 
             container.Install<StandardInstaller>();
-
             container.Install(GetGlobalInstallers());
 
             return container;

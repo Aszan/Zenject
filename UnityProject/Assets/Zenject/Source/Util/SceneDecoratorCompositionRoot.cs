@@ -28,16 +28,16 @@ namespace Zenject
 
         public void Awake()
         {
-#pragma warning disable 168
-            // Ensure the global comp root is initialized so that it doesn't get parented to us below
-            var globalRoot = GlobalCompositionRoot.Instance;
-#pragma warning restore 168
+            // We always want to initialize GlobalCompositionRoot as early as possible
+            GlobalCompositionRoot.Instance.EnsureIsInitialized();
 
             _beforeInstallHooks = SceneCompositionRoot.BeforeInstallHooks;
             SceneCompositionRoot.BeforeInstallHooks = null;
 
             _afterInstallHooks = SceneCompositionRoot.AfterInstallHooks;
             SceneCompositionRoot.AfterInstallHooks = null;
+
+            SceneCompositionRoot.DecoratedScenes.Add(this.gameObject.scene);
 
             ZenUtil.LoadSceneAdditive(
                 SceneName, AddPreBindings, AddPostBindings);

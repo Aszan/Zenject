@@ -17,30 +17,27 @@ namespace Zenject
     public class DiContainer : IInstantiator, IResolver, IBinder
     {
         readonly Dictionary<BindingId, List<ProviderBase>> _providers = new Dictionary<BindingId, List<ProviderBase>>();
-        readonly SingletonProviderMap _singletonMap;
         readonly HashSet<Type> _installedInstallers = new HashSet<Type>();
         readonly Stack<Type> _installsInProgress = new Stack<Type>();
         readonly DiContainer _parentContainer;
         readonly Stack<LookupId> _resolvesInProgress = new Stack<LookupId>();
-
-#if !ZEN_NOT_UNITY3D
-        readonly Transform _rootTransform;
-#endif
+        readonly SingletonProviderCreator _singletonProviderFactory;
+        readonly SingletonRegistry _singletonRegistry;
 
         bool _isValidating;
 
+#if !ZEN_NOT_UNITY3D
+        bool _hasLookedUpParent;
+        Transform _defaultParent;
+#endif
+
         public DiContainer()
         {
-            _singletonMap = new SingletonProviderMap(this);
+            _singletonRegistry = new SingletonRegistry();
+            _singletonProviderFactory = new SingletonProviderCreator(this, _singletonRegistry);
 
             this.Bind<DiContainer>().ToInstance(this);
             this.Bind<IInstantiator>().ToInstance(this);
-            this.Bind<SingletonProviderMap>().ToInstance(_singletonMap);
-
-#if !ZEN_NOT_UNITY3D
-            this.Bind<PrefabSingletonProviderMap>().ToSingle<PrefabSingletonProviderMap>();
-#endif
-            this.Bind<SingletonInstanceHelper>().ToSingle<SingletonInstanceHelper>();
         }
 
         public DiContainer(DiContainer parentContainer)
@@ -49,28 +46,46 @@ namespace Zenject
             _parentContainer = parentContainer;
         }
 
-#if !ZEN_NOT_UNITY3D
-        public DiContainer(Transform rootTransform, DiContainer parentContainer)
-            : this()
-        {
-            _parentContainer = parentContainer;
-            _rootTransform = rootTransform;
-        }
-
-        public DiContainer(Transform rootTransform)
-            : this()
-        {
-            _rootTransform = rootTransform;
-        }
-#endif
-
-        public SingletonProviderMap SingletonProviderMap
+        public SingletonProviderCreator SingletonProviderCreator
         {
             get
             {
-                return _singletonMap;
+                return _singletonProviderFactory;
             }
         }
+
+        public SingletonRegistry SingletonRegistry
+        {
+            get
+            {
+                return _singletonRegistry;
+            }
+        }
+
+#if !ZEN_NOT_UNITY3D
+        public Transform DefaultParent
+        {
+            get
+            {
+                // We should be able to cache this since we should be able to assume that
+                // this property isn't called until after the install phase
+                if (!_hasLookedUpParent)
+                {
+                    _hasLookedUpParent = true;
+
+                    // Use an InjectContext so we can specify local = true
+                    // and optional = true
+                    var ctx = new InjectContext(
+                        this, typeof(Transform), ZenConstants.DefaultParentId,
+                        true, null, null, "", null, null, null, InjectSources.Local);
+
+                    _defaultParent = this.Resolve<Transform>(ctx);
+                }
+
+                return _defaultParent;
+            }
+        }
+#endif
 
         public DiContainer ParentContainer
         {
@@ -101,16 +116,6 @@ namespace Zenject
                 return _installedInstallers;
             }
         }
-
-#if !ZEN_NOT_UNITY3D
-        public Transform RootTransform
-        {
-            get
-            {
-                return _rootTransform;
-            }
-        }
-#endif
 
         // True if this container was created for the purposes of validation
         // Useful to avoid instantiating things that we shouldn't during this step
@@ -145,11 +150,7 @@ namespace Zenject
 
         public DiContainer CreateSubContainer()
         {
-#if ZEN_NOT_UNITY3D
             return new DiContainer(this);
-#else
-            return new DiContainer(_rootTransform, this);
-#endif
         }
 
         public void RegisterProvider(
@@ -192,11 +193,6 @@ namespace Zenject
             provider.Dispose();
 
             return numRemoved;
-        }
-
-        public IEnumerable<Type> GetDependencyContracts<TContract>()
-        {
-            return GetDependencyContracts(typeof(TContract));
         }
 
         public IEnumerable<ZenjectResolveException> ValidateResolve<TContract>()
@@ -286,20 +282,51 @@ namespace Zenject
         // Be careful with this method since it is a coroutine
         IEnumerable<ProviderPair> GetProviderMatchesInternal(InjectContext context)
         {
-            return GetProvidersForContract(context.BindingId, context.LocalOnly).Where(x => x.Provider.Matches(context));
+            return GetProvidersForContract(context.BindingId, context.SourceType).Where(x => x.Provider.Matches(context));
         }
 
-        IEnumerable<ProviderPair> GetProvidersForContract(BindingId bindingId, bool localOnly)
+        IEnumerable<ProviderPair> GetProvidersForContract(BindingId bindingId, InjectSources sourceType)
         {
-            var localPairs = GetLocalProviders(bindingId).Select(x => new ProviderPair(x, this));
-
-            if (localOnly || _parentContainer == null)
+            switch (sourceType)
             {
-                return localPairs;
+                case InjectSources.Local:
+                {
+                    return GetLocalProviders(bindingId).Select(x => new ProviderPair(x, this));
+                }
+                case InjectSources.Any:
+                {
+                    var localPairs = GetLocalProviders(bindingId).Select(x => new ProviderPair(x, this));
+
+                    if (_parentContainer == null)
+                    {
+                        return localPairs;
+                    }
+
+                    return localPairs.Concat(
+                        _parentContainer.GetProvidersForContract(bindingId, InjectSources.Any));
+                }
+                case InjectSources.AnyParent:
+                {
+                    if (_parentContainer == null)
+                    {
+                        return Enumerable.Empty<ProviderPair>();
+                    }
+
+                    return _parentContainer.GetProvidersForContract(bindingId, InjectSources.Any);
+                }
+                case InjectSources.Parent:
+                {
+                    if (_parentContainer == null)
+                    {
+                        return Enumerable.Empty<ProviderPair>();
+                    }
+
+                    return _parentContainer.GetProvidersForContract(bindingId, InjectSources.Local);
+                }
             }
 
-            return localPairs.Concat(
-                _parentContainer.GetProvidersForContract(bindingId, false));
+            Assert.Throw("Invalid source type");
+            return null;
         }
 
         List<ProviderBase> GetLocalProviders(BindingId bindingId)
@@ -474,7 +501,7 @@ namespace Zenject
 
                 // First try picking the most 'local' dependencies
                 // This will bias towards bindings for the lower level specific containers rather than the global high level container
-                // This will, for example, allow you to just ask for a DiContainer dependency without needing to specify [InjectLocal]
+                // This will, for example, allow you to just ask for a DiContainer dependency without needing to specify [Inject(InjectSources.Local)]
                 // (otherwise it would always match for a list of DiContainer's for all parent containers)
                 var sortedProviders = providers.Select(x => new { Pair = x, Distance = GetContainerHeirarchyDistance(x.Container) }).OrderBy(x => x.Distance).ToList();
 
@@ -597,6 +624,11 @@ namespace Zenject
 
             Assert.IsNotNull(_parentContainer);
             return _parentContainer.GetContainerHeirarchyDistance(container, depth + 1);
+        }
+
+        public IEnumerable<Type> GetDependencyContracts<TContract>()
+        {
+            return GetDependencyContracts(typeof(TContract));
         }
 
         public IEnumerable<Type> GetDependencyContracts(Type contract)
@@ -796,16 +828,15 @@ namespace Zenject
         public GameObject InstantiatePrefabExplicit(
             GameObject prefab, IEnumerable<object> extraArgMap, InjectContext context, bool includeInactive)
         {
+            return InstantiatePrefabExplicit(prefab, extraArgMap, context, includeInactive, null);
+        }
+
+        public GameObject InstantiatePrefabExplicit(
+            GameObject prefab, IEnumerable<object> extraArgMap, InjectContext context, bool includeInactive, string groupName)
+        {
             var gameObj = (GameObject)GameObject.Instantiate(prefab);
 
-            if (_rootTransform != null)
-            {
-                // By default parent to comp root
-                // This is good so that the entire object graph is
-                // contained underneath it, which is useful for cases
-                // where you need to delete the entire object graph
-                gameObj.transform.SetParent(_rootTransform, false);
-            }
+            gameObj.transform.SetParent(GetTransformGroup(groupName), false);
 
             gameObj.SetActive(true);
 
@@ -814,16 +845,11 @@ namespace Zenject
             return gameObj;
         }
 
-        // Create a new empty game object under the composition root
+        // Create a new empty game object under the default parent
         public GameObject InstantiateGameObject(string name)
         {
             var gameObj = new GameObject(name);
-
-            if (_rootTransform != null)
-            {
-                gameObj.transform.SetParent(_rootTransform, false);
-            }
-
+            gameObj.transform.SetParent(DefaultParent, false);
             return gameObj;
         }
 
@@ -832,12 +858,7 @@ namespace Zenject
         {
             Assert.That(componentType.DerivesFrom<Component>(), "Expected type '{0}' to derive from UnityEngine.Component", componentType.Name());
 
-            var gameObj = new GameObject(name);
-
-            if (_rootTransform != null)
-            {
-                gameObj.transform.SetParent(_rootTransform, false);
-            }
+            var gameObj = InstantiateGameObject(name);
 
             if (componentType == typeof(Transform))
             {
@@ -862,30 +883,34 @@ namespace Zenject
         }
 
         public object InstantiatePrefabForComponentExplicit(
-            Type componentType, GameObject prefab, List<TypeValuePair> extraArgs, InjectContext currentContext)
+            Type componentType, GameObject prefab, List<TypeValuePair> extraArgs,
+            InjectContext currentContext)
         {
-            return InstantiatePrefabForComponentExplicit(componentType, prefab, extraArgs, currentContext, false);
+            return InstantiatePrefabForComponentExplicit(
+                componentType, prefab, extraArgs, currentContext, false);
         }
 
         public object InstantiatePrefabForComponentExplicit(
-            Type componentType, GameObject prefab, List<TypeValuePair> extraArgs, InjectContext currentContext, bool includeInactive)
+            Type componentType, GameObject prefab, List<TypeValuePair> extraArgs,
+            InjectContext currentContext, bool includeInactive)
+        {
+            return InstantiatePrefabForComponentExplicit(
+                componentType, prefab, extraArgs, currentContext, includeInactive, null);
+        }
+
+        public object InstantiatePrefabForComponentExplicit(
+            Type componentType, GameObject prefab, List<TypeValuePair> extraArgs,
+            InjectContext currentContext, bool includeInactive, string groupName)
         {
             Assert.That(prefab != null, "Null prefab found when instantiating game object");
 
             // It could be an interface so this may fail in valid cases so you may want to comment out
             // Leaving it in for now to catch the more likely scenario of it being a mistake
-            Assert.That(componentType.DerivesFrom<Component>(), "Expected type '{0}' to derive from UnityEngine.Component", componentType.Name());
+            Assert.That(componentType.IsInterface || componentType.DerivesFrom<Component>(), "Expected type '{0}' to derive from UnityEngine.Component", componentType.Name());
 
             var gameObj = (GameObject)GameObject.Instantiate(prefab);
 
-            if (_rootTransform != null)
-            {
-                // By default parent to comp root
-                // This is good so that the entire object graph is
-                // contained underneath it, which is useful for cases
-                // where you need to delete the entire object graph
-                gameObj.transform.SetParent(_rootTransform, false);
-            }
+            gameObj.transform.SetParent(GetTransformGroup(groupName), false);
 
             gameObj.SetActive(true);
 
@@ -922,6 +947,36 @@ namespace Zenject
             }
 
             return requestedScript;
+        }
+
+        Transform GetTransformGroup(string groupName)
+        {
+            if (DefaultParent == null)
+            {
+                if (groupName == null)
+                {
+                    return null;
+                }
+
+                return (GameObject.Find("/" + groupName) ?? new GameObject(groupName)).transform;
+            }
+
+            if (groupName == null)
+            {
+                return DefaultParent;
+            }
+
+            foreach (Transform child in DefaultParent)
+            {
+                if (child.name == groupName)
+                {
+                    return child;
+                }
+            }
+
+            var group = new GameObject(groupName).transform;
+            group.SetParent(DefaultParent, false);
+            return group;
         }
 #endif
 
@@ -1331,6 +1386,21 @@ namespace Zenject
 
         ////////////// IBinder ////////////////
 
+        public void UnbindAll()
+        {
+            foreach (var provider in _providers.Values.SelectMany(x => x))
+            {
+                provider.Dispose();
+            }
+
+            _providers.Clear();
+        }
+
+        public bool Unbind<TContract>()
+        {
+            return Unbind<TContract>(null);
+        }
+
         public bool Unbind<TContract>(string identifier)
         {
             List<ProviderBase> providersToRemove;
@@ -1373,11 +1443,6 @@ namespace Zenject
         public UntypedBinder Bind(Type contractType)
         {
             return Bind(contractType, null);
-        }
-
-        public bool Unbind<TContract>()
-        {
-            return Unbind<TContract>(null);
         }
 
         public bool HasBinding(InjectContext context)
@@ -1503,7 +1568,7 @@ namespace Zenject
         {
             Assert.That(!typeof(TContract).DerivesFromOrEqual<IInstaller>(),
                 "Deprecated usage of Bind<IInstaller>, use Install<IInstaller> instead");
-            return new GenericBinder<TContract>(this, identifier, _singletonMap);
+            return new GenericBinder<TContract>(this, identifier);
         }
 
         public FacadeBinder<TFacade> BindFacade<TFacade>(Action<DiContainer> installerFunc)
@@ -1524,12 +1589,18 @@ namespace Zenject
         {
             Assert.That(!contractType.DerivesFromOrEqual<IInstaller>(),
                 "Deprecated usage of Bind<IInstaller>, use Install<IInstaller> instead");
-            return new UntypedBinder(this, contractType, identifier, _singletonMap);
+            return new UntypedBinder(this, contractType, identifier);
         }
 
 #if !ZEN_NOT_UNITY3D
+        public BindingConditionSetter BindGameObjectFactory<T>(GameObject prefab)
+            where T : class
+        {
+            return BindGameObjectFactory<T>(prefab, null);
+        }
+
         public BindingConditionSetter BindGameObjectFactory<T>(
-            GameObject prefab)
+            GameObject prefab, string groupName)
             // This would be useful but fails with VerificationException's in webplayer builds for some reason
             //where T : GameObjectFactory
             where T : class
@@ -1543,7 +1614,8 @@ namespace Zenject
             // We could bind the factory ToSingle but doing it this way is better
             // since it allows us to have multiple game object factories that
             // use different prefabs and have them injected into different places
-            return Bind<T>().ToMethod((ctx) => ctx.Container.Instantiate<T>(prefab));
+            return Bind<T>().ToMethod((ctx) => ctx.Container.InstantiateExplicit<T>(
+                new List<TypeValuePair>() { InstantiateUtil.CreateTypePair(prefab), InstantiateUtil.CreateTypePair(groupName) }));
         }
 #endif
 

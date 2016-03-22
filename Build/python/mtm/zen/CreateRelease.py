@@ -136,6 +136,15 @@ class Runner:
             self._sys.copyFile('[ZenDllDir]/Zenject.Commands.dll', '[ZenTempDir]/Zenject.Commands.dll')
             self._sys.copyFile('[ZenDllMetaDir]/Zenject.Commands.dll.meta', '[ZenTempDir]/Zenject.Commands.dll.meta')
 
+            self._sys.copyFile('[ZenjectDir]/Version.txt', '[ZenTempDir]/Version.txt')
+            self._sys.copyFile('[ZenjectDir]/Version.txt.meta', '[ZenTempDir]/Version.txt.meta')
+
+            self._sys.copyFile('[ZenjectDir]/LICENSE.txt', '[ZenTempDir]/LICENSE.txt')
+            self._sys.copyFile('[ZenjectDir]/LICENSE.txt.meta', '[ZenTempDir]/LICENSE.txt.meta')
+
+            self._sys.copyDirectory('[ZenjectDir]/Documentation', '[ZenTempDir]/Documentation')
+            self._sys.copyFile('[ZenjectDir]/Documentation.meta', '[ZenTempDir]/Documentation.meta')
+
             self._createUnityPackage('[PackageTempDir]', outputPath)
         finally:
             self._sys.deleteDirectory('[PackageTempDir]')
@@ -160,6 +169,10 @@ class Runner:
             self._zipHelper.createZipFile('[ZenTempDir]/OptionalExtras/UnitTests', '[ZenTempDir]/OptionalExtras/UnitTests.zip')
             self._sys.deleteDirectory('[ZenTempDir]/OptionalExtras/UnitTests')
             self._sys.removeFile('[ZenTempDir]/OptionalExtras/UnitTests.meta')
+
+            self._zipHelper.createZipFile('[ZenTempDir]/OptionalExtras/IntegrationTests', '[ZenTempDir]/OptionalExtras/IntegrationTests.zip')
+            self._sys.deleteDirectory('[ZenTempDir]/OptionalExtras/IntegrationTests')
+            self._sys.removeFile('[ZenTempDir]/OptionalExtras/IntegrationTests.meta')
 
             self._zipHelper.createZipFile('[ZenTempDir]/OptionalExtras/AutoMocking', '[ZenTempDir]/OptionalExtras/AutoMocking.zip')
             self._sys.deleteDirectory('[ZenTempDir]/OptionalExtras/AutoMocking')

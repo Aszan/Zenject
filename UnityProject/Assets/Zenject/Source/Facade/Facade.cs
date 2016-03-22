@@ -7,18 +7,18 @@ namespace Zenject
     [System.Diagnostics.DebuggerStepThrough]
     public class Facade : IFacade
     {
-        [Inject]
+        [Inject(InjectSources.Local)]
         TickableManager _tickableManager = null;
 
-        [Inject]
+        [Inject(InjectSources.Local)]
         InitializableManager _initializableManager = null;
 
-        [Inject]
+        [Inject(InjectSources.Local)]
         DisposableManager _disposablesManager = null;
 
         // For cases where you have objects that aren't referenced anywhere but still want them to be
         // created on startup
-        [InjectLocalOptional]
+        [InjectOptional(InjectSources.Local)]
         public List<object> _initialObjects = null;
 
         public TickableManager TickableManager
